@@ -1,8 +1,8 @@
 # Simple AKS Example
 
-This repo contains the code to deploy a simple Azure Kubernetes Service cluster using Terraform, and present a "Helo World" python application.
+This repo contains the code to deploy a simple Azure Kubernetes Service cluster using Terraform, and present a "Hello World" Python-based web application.
 
-You will need to be owner of a subscription to deploy this example to.
+You will need to be owner of a subscription if you would like to create all the resources this guide will walk you through.
 
 > Disclaimer: Please remember to clean-up any resources you deploy whilst following this guide, to avoid any expected Azure costs.
 
