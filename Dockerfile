@@ -4,14 +4,21 @@ FROM python:3.13-slim
 # Set the working directory inside the container
 WORKDIR /app
 
-# Copy the python subdirectory into the container
-COPY python/ ./python/
+# Create a non-root user for security
+RUN useradd -m -u 1000 appuser && \
+    chown -R appuser:appuser /app
 
-# Set the working directory to the subdirectory
-WORKDIR /app/python
+# Copy requirements file first (better layer caching)
+COPY python/requirements.txt .
 
-# Install Flask
-RUN pip install flask
+# Install dependencies
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy the application code
+COPY python/app.py .
+
+# Switch to non-root user
+USER appuser
 
 # Expose the port the app runs on
 EXPOSE 5000
