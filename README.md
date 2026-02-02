@@ -4,11 +4,11 @@ This repo contains the code to deploy a simple Azure Kubernetes Service cluster 
 
 You will need to be owner of a subscription if you would like to create all the resources this guide will walk you through.
 
-> Disclaimer: Please remember to clean-up any resources you deploy whilst following this guide, to avoid any expected Azure costs.
+> Disclaimer: Please remember to clean-up any resources you deploy whilst following this guide, to avoid any unexpected Azure costs.
 
 All steps were carried out using a Windows 11 PC - your mileage may vary.
 
-## Prerequesites
+## Prerequisites
 
 Software used during this process:
 
@@ -157,7 +157,7 @@ Apply the add/change plan:
 terraform -chdir=terraform  apply aks-example-dev.tfplan
 ```
 
-![Terraform apply](images/terrafomr-apply-example.png)
+![Terraform apply](images/terraform-apply-example.png)
 
 > Note: The deployment should take around 5 minutes to complete
 
@@ -222,6 +222,7 @@ Serve the Hello World app using AKS:
 ```bash
 # Substitute tokens to create the deployment file - the ACR name needs to reflect what was deployed
 envsubst < kube-manifests/01-deployment.template.yml > kube-manifests/01-deployment.yml
+envsubst < kube-manifests/02-service.template.yml > kube-manifests/02-service.yml
 
 # Publish the app using the yml files
 kubectl apply -f kube-manifests/01-deployment.yml
@@ -236,7 +237,6 @@ kubectl get service
 Here's a view from the Azure Portal for comparison:
 
 ![AKS service and ingresses](images/aks-services-and-ingresses-example.png)
-
 
 Browse to the External-IP to see the Hello World app in all its (not) glory:
 
