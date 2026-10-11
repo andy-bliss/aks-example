@@ -70,9 +70,6 @@ Create a Storage Account for holding TF State:
 # Create resource group
 az group create --name $tfstate_resource_group_name --location $tfstate_location
 
-# Create storage account
-az storage account create --name $tfstate_storage_account_name --resource-group $tfstate_resource_group_name --sku Standard_LRS --encryption-services blob
-
 # Create a secure Storage Account
 az storage account create \
   --name $tfstate_storage_account_name \
