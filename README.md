@@ -96,7 +96,8 @@ storage_account_id=$(az storage account show \
   --name $tfstate_storage_account_name \
   --resource-group $tfstate_resource_group_name \
   --query id -o tsv)
-az role assignment create \
+# MSYS_NO_PATHCONV stops Git Bash on Windows rewriting the "/subscriptions/..." scope into a Windows path
+MSYS_NO_PATHCONV=1 az role assignment create \
   --assignee $(az ad signed-in-user show --query id -o tsv) \
   --role "Storage Blob Data Contributor" \
   --scope $storage_account_id
