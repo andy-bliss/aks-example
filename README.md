@@ -59,7 +59,10 @@ Create environment variables to use with the deployment:
 # Terraform State resources (backend)
 tfstate_resource_group_name="rg-tfstate-uksouth"
 tfstate_location="uksouth"
-tfstate_storage_account_name="sttfstateuksouth0211"
+# Storage account names must be globally unique (3-24 lowercase letters and digits), so append a
+# stable 6-character hash of your subscription ID - the same name results every time you run this
+subscription_hash=$(az account show --query id -o tsv | tr -d '\r\n' | sha256sum | cut -c1-6)
+tfstate_storage_account_name="sttfstateuksouth${subscription_hash}"
 tfstate_container_name="tfstate"
 tfstate_file_name="aks-example-dev.tfstate"
 ```
@@ -88,57 +91,64 @@ az storage account network-rule add \
   --resource-group $tfstate_resource_group_name \
   --ip-address $my_ip_address
 
-# Create blob container
-az storage container create --name $tfstate_container_name --account-name $tfstate_storage_account_name
+# Grant yourself data-plane access to the blobs (being Owner is not enough - it only covers the management plane)
+storage_account_id=$(az storage account show \
+  --name $tfstate_storage_account_name \
+  --resource-group $tfstate_resource_group_name \
+  --query id -o tsv)
+az role assignment create \
+  --assignee $(az ad signed-in-user show --query id -o tsv) \
+  --role "Storage Blob Data Contributor" \
+  --scope $storage_account_id
+
+# Create blob container - the role assignment can take a minute or two to take effect, so retry if this is denied
+az storage container create \
+  --name $tfstate_container_name \
+  --account-name $tfstate_storage_account_name \
+  --auth-mode login
 ```
 
 ![TFState storage account](images/tfstate-storage-account.png)
 
-Create environment variables to use with Terraform:
+Set the environment variables the AzureRM provider needs, and create your variables file:
 
 ```bash
-# Fetch subscription Info
-echo "Fetching Azure subscription info..."
-subscription_id=$(az account show --query "id" -o tsv | sed 's/\r//')
-tenant_id=$(az account show --query "tenantId" -o tsv | sed 's/\r//')
-
-# Fetch storage account key
-echo "Fetching Azure storage account key..."
-access_key=$(az storage account keys list \
-  --account-name $tfstate_storage_account_name \
-  --resource-group $tfstate_resource_group_name \
-  --query "[0].value" -o tsv)
-
 # Set the Environment vars required by the AzureRM provider - Confirm with: printenv | grep ARM_
-export ARM_SUBSCRIPTION_ID="$subscription_id"
-export ARM_TENANT_ID="$tenant_id"
-export ARM_ACCESS_KEY="$access_key"
+export ARM_SUBSCRIPTION_ID=$(az account show --query "id" -o tsv | sed 's/\r//')
+export ARM_TENANT_ID=$(az account show --query "tenantId" -o tsv | sed 's/\r//')
 
-# Set Resource tags - Confirm with: printenv | grep TF_VAR_
-export TF_VAR_tags='{"Environment":"Development"}'
+# Create your variables file from the example and edit as required (it is gitignored)
+cp terraform/terraform.tfvars.example terraform/terraform.tfvars
+```
 
-# Set Baseline resources
-export TF_VAR_resource_group_name='rg-aksexample-dev-uksouth'
-export TF_VAR_location='uksouth'
+`terraform.tfvars` only holds the environment-specific values. Everything else (VM size, node counts, zones, network ranges and so on) has a default in `terraform/variables.tf`. This is the Terraform equivalent of a `.env` file next to a `docker-compose.yml`.
 
-# Set AKS resources
-export TF_VAR_virtual_network_name='vnet-aksexample-dev-uksouth'
-export TF_VAR_virtual_network_address_space='["192.168.18.0/23"]'
-export TF_VAR_aks_subnet_name='snet-aksexample-dev-uksouth'
-export TF_VAR_aks_subnet_address_prefixes='["192.168.18.0/23"]'
-export TF_VAR_aks_cluster_name='aks-aksexample-dev-uksouth'
-export TF_VAR_aks_dns_prefix='aksexample-uksouth'
-export TF_VAR_aks_kubernetes_version=1.30
-export TF_VAR_aks_node_resource_group_name='aksnrg-aksexample-dev-uksouth'
-export TF_VAR_aks_default_node_pool_name='linuxsysnp'
-export TF_VAR_aks_default_node_pool_vm_size='Standard_B2ms'
-export TF_VAR_aks_default_node_pool_os_sku='Ubuntu'
-export TF_VAR_aks_default_node_pool_os_disk_size_gb=30
-export TF_VAR_aks_default_node_pool_minimum_node_count=1
-export TF_VAR_aks_default_node_pool_maximum_node_count=2
-export TF_VAR_aks_default_node_pool_availability_zones='["1","2","3"]'
-export TF_VAR_acr_name='acraksexampledevuksouth'
-export TF_VAR_acr_sku='Basic'
+The Kubernetes version defaults to the current AKS default. To see what is available, or to pin a version by setting `aks_kubernetes_version`:
+
+```bash
+az aks get-versions --location uksouth --output table
+```
+
+No storage account key is needed: the Terraform backend authenticates with your `az login` identity (`use_azuread_auth` in `backend.tf`), using the Storage Blob Data Contributor role assigned above.
+
+### Check VM availability and quota
+
+The default node pool uses `Standard_B2s_v2` (Bsv2 family) across availability zones 1, 2 and 3. New VM families often have a quota of zero on a subscription, so check before deploying:
+
+```bash
+# Is the size available in your region and zones? Restrictions should be None
+az vm list-skus --location uksouth --size Standard_B2s_v2 --zone --output table
+
+# Do you have quota? You need 2 vCPUs per node, so 4 for the autoscaler maximum of 2 nodes
+az vm list-usage --location uksouth --query "[?contains(name.value,'standardBsv2Family')]" --output table
+```
+
+If the quota limit is 0, request an increase in the Azure Portal under Subscriptions > Usage + quotas, searching for "Bsv2". 
+
+Some subscriptions are not enabled for zones on newer VM families. If you see zone restrictions, either request zonal access from Microsoft or deploy without zones by adding this to `terraform.tfvars`:
+
+```hcl
+aks_default_node_pool_availability_zones = []
 ```
 
 ## Deployment
@@ -176,20 +186,24 @@ terraform -chdir=terraform  apply aks-example-dev.tfplan
 ## AKS Inspection
 
 ```bash
+# Read the names Terraform created
+aks_cluster_name=$(terraform -chdir=terraform output -raw aks_cluster_name)
+resource_group_name=$(terraform -chdir=terraform output -raw resource_group_name)
+
 # Get overview using Azure CLI
 az aks show \
-  --name $TF_VAR_aks_cluster_name \
-  --resource-group $TF_VAR_resource_group_name \
+  --name $aks_cluster_name \
+  --resource-group $resource_group_name \
   --output table
 
 # Get nodepools using Azure CLI
 az aks nodepool list \
-  --cluster-name $TF_VAR_aks_cluster_name \
-  --resource-group $TF_VAR_resource_group_name \
+  --cluster-name $aks_cluster_name \
+  --resource-group $resource_group_name \
   --output table
 
 # Get Cluster credentials and set to current context
-az aks get-credentials --name $TF_VAR_aks_cluster_name --resource-group $TF_VAR_resource_group_name
+az aks get-credentials --name $aks_cluster_name --resource-group $resource_group_name
 
 # List all k8s objects from Cluster Control plane
 kubectl get all --all-namespaces
@@ -211,7 +225,7 @@ Upload the Docker image to the ACR:
 
 ```bash
 # Isolate the ACR for token replacement
-export ACR_NAME=$TF_VAR_acr_name
+export ACR_NAME=$(terraform -chdir=terraform output -raw acr_name)
 
 # Login into the ACR using Entra/AAD auth
 az acr login --name $ACR_NAME
