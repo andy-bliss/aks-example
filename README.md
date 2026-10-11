@@ -4,7 +4,7 @@ This repo contains the code to deploy a simple Azure Kubernetes Service cluster 
 
 You will need to be owner of a subscription if you would like to create all the resources this guide will walk you through.
 
-> Disclaimer: Please remember to clean-up any resources you deploy whilst following this guide, to avoid any unexpected Azure costs.
+> Disclaimer: Please remember to clean-up any resources you deploy whilst following this guide, to avoid any unwanted Azure costs.
 
 All steps were carried out using a Windows 11 PC - your mileage may vary.
 
@@ -12,10 +12,25 @@ All steps were carried out using a Windows 11 PC - your mileage may vary.
 
 Software used during this process:
 
-- Azure CLI
+- Azure CLI:
+  ```PowerShell
+  winget install -e --id Microsoft.AzureCLI
+  ```
+
 - Terraform
+  ```PowerShell
+  winget install -e --id Hashicorp.Terraform
+  ```
+
 - KubeCTL
+  ```PowerShell
+  winget install -e --id Kubernetes.kubectl
+  ```
+
 - Docker Desktop
+  ```PowerShell
+  winget install -e --id Docker.DockerDesktop
+  ```
 
 For more information on setting up your PC to run this code, here is a Microsoft Learn guide - [Install Terraform on Windows with Bash](https://learn.microsoft.com/en-us/azure/developer/terraform/get-started-windows-bash)
 
