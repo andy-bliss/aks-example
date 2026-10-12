@@ -1,0 +1,17 @@
+# Copy to terraform.tfvars (gitignored) and edit. Terraform loads terraform.tfvars automatically.
+# Anything not listed here uses its default from variables.tf.
+
+tags = {
+  Environment = "Development"
+}
+
+resource_group_name          = "rg-aksexample-dev-uksouth"
+location                     = "uksouth"
+virtual_network_name         = "vnet-aksexample-dev-uksouth"
+aks_subnet_name              = "snet-aksexample-dev-uksouth"
+aks_cluster_name             = "aks-aksexample-dev-uksouth"
+aks_dns_prefix               = "aksexample-uksouth"
+aks_node_resource_group_name = "aksnrg-aksexample-dev-uksouth"
+
+# A hash of your subscription ID is appended to make the registry name globally unique
+acr_name_prefix = "acraksexampledev"

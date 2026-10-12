@@ -3,7 +3,7 @@ kind: Deployment
 metadata:
   name: hello-world
 spec:
-  replicas: 1
+  replicas: 2
   selector:
     matchLabels:
       app: hello-world
@@ -14,6 +14,45 @@ spec:
     spec:
       containers:
       - name: hello-world
-        image: ${ACR_NAME}.azurecr.io/hello-world-app:v1
+        image: ${ACR_NAME}.azurecr.io/hello-world-app:${IMAGE_TAG}
         ports:
         - containerPort: 5000
+        # Resource requests are what the scheduler reserves for the pod when choosing a node;
+        # limits are the ceiling (memory over the limit = the container is killed)
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 250m
+            memory: 128Mi
+        # Readiness: is the pod ready to receive traffic? Failing pods are removed from the Service
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 5000
+          initialDelaySeconds: 3
+          periodSeconds: 5
+        # Liveness: is the process still healthy? Failing pods are restarted
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 5000
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+          seccompProfile:
+            type: RuntimeDefault
+        # gunicorn writes small heartbeat files to /tmp, which needs to be writable
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+      volumes:
+      - name: tmp
+        emptyDir: {}

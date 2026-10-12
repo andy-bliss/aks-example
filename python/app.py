@@ -6,5 +6,12 @@ app = Flask(__name__)
 def hello():
     return "Hello World"
 
+@app.route('/healthz')
+def healthz():
+    # Used by the Kubernetes liveness and readiness probes
+    return "ok"
+
+# Run in the container with gunicorn (see Dockerfile).
+# For local development without Docker: python app.py
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+    app.run(host='127.0.0.1', port=5000)

@@ -4,18 +4,33 @@ This repo contains the code to deploy a simple Azure Kubernetes Service cluster 
 
 You will need to be owner of a subscription if you would like to create all the resources this guide will walk you through.
 
-> Disclaimer: Please remember to clean-up any resources you deploy whilst following this guide, to avoid any expected Azure costs.
+> Disclaimer: Please remember to clean-up any resources you deploy whilst following this guide, to avoid any unwanted Azure costs.
 
 All steps were carried out using a Windows 11 PC - your mileage may vary.
 
-## Prerequesites
+## Prerequisites
 
 Software used during this process:
 
-- Azure CLI
+- Azure CLI:
+  ```PowerShell
+  winget install -e --id Microsoft.AzureCLI
+  ```
+
 - Terraform
+  ```PowerShell
+  winget install -e --id Hashicorp.Terraform
+  ```
+
 - KubeCTL
+  ```PowerShell
+  winget install -e --id Kubernetes.kubectl
+  ```
+
 - Docker Desktop
+  ```PowerShell
+  winget install -e --id Docker.DockerDesktop
+  ```
 
 For more information on setting up your PC to run this code, here is a Microsoft Learn guide - [Install Terraform on Windows with Bash](https://learn.microsoft.com/en-us/azure/developer/terraform/get-started-windows-bash)
 
@@ -44,7 +59,10 @@ Create environment variables to use with the deployment:
 # Terraform State resources (backend)
 tfstate_resource_group_name="rg-tfstate-uksouth"
 tfstate_location="uksouth"
-tfstate_storage_account_name="sttfstateuksouth0211"
+# Storage account names must be globally unique (3-24 lowercase letters and digits), so append a
+# stable 6-character hash of your subscription ID - the same name results every time you run this
+subscription_hash=$(az account show --query id -o tsv | tr -d '\r\n' | sha256sum | cut -c1-6)
+tfstate_storage_account_name="sttfstateuksouth${subscription_hash}"
 tfstate_container_name="tfstate"
 tfstate_file_name="aks-example-dev.tfstate"
 ```
@@ -54,9 +72,6 @@ Create a Storage Account for holding TF State:
 ```bash
 # Create resource group
 az group create --name $tfstate_resource_group_name --location $tfstate_location
-
-# Create storage account
-az storage account create --name $tfstate_storage_account_name --resource-group $tfstate_resource_group_name --sku Standard_LRS --encryption-services blob
 
 # Create a secure Storage Account
 az storage account create \
@@ -76,57 +91,65 @@ az storage account network-rule add \
   --resource-group $tfstate_resource_group_name \
   --ip-address $my_ip_address
 
-# Create blob container
-az storage container create --name $tfstate_container_name --account-name $tfstate_storage_account_name
+# Grant yourself data-plane access to the blobs (being Owner is not enough - it only covers the management plane)
+storage_account_id=$(az storage account show \
+  --name $tfstate_storage_account_name \
+  --resource-group $tfstate_resource_group_name \
+  --query id -o tsv)
+# MSYS_NO_PATHCONV stops Git Bash on Windows rewriting the "/subscriptions/..." scope into a Windows path
+MSYS_NO_PATHCONV=1 az role assignment create \
+  --assignee $(az ad signed-in-user show --query id -o tsv) \
+  --role "Storage Blob Data Contributor" \
+  --scope $storage_account_id
+
+# Create blob container - the role assignment can take a minute or two to take effect, so retry if this is denied
+az storage container create \
+  --name $tfstate_container_name \
+  --account-name $tfstate_storage_account_name \
+  --auth-mode login
 ```
 
 ![TFState storage account](images/tfstate-storage-account.png)
 
-Create environment variables to use with Terraform:
+Set the environment variables the AzureRM provider needs, and create your variables file:
 
 ```bash
-# Fetch subscription Info
-echo "Fetching Azure subscription info..."
-subscription_id=$(az account show --query "id" -o tsv | sed 's/\r//')
-tenant_id=$(az account show --query "tenantId" -o tsv | sed 's/\r//')
-
-# Fetch storage account key
-echo "Fetching Azure storage account key..."
-access_key=$(az storage account keys list \
-  --account-name $tfstate_storage_account_name \
-  --resource-group $tfstate_resource_group_name \
-  --query "[0].value" -o tsv)
-
 # Set the Environment vars required by the AzureRM provider - Confirm with: printenv | grep ARM_
-export ARM_SUBSCRIPTION_ID="$subscription_id"
-export ARM_TENANT_ID="$tenant_id"
-export ARM_ACCESS_KEY="$access_key"
+export ARM_SUBSCRIPTION_ID=$(az account show --query "id" -o tsv | sed 's/\r//')
+export ARM_TENANT_ID=$(az account show --query "tenantId" -o tsv | sed 's/\r//')
 
-# Set Resource tags - Confirm with: printenv | grep TF_VAR_
-export TF_VAR_tags='{"Environment":"Development"}'
+# Create your variables file from the example and edit as required (it is gitignored)
+cp terraform/terraform.tfvars.example terraform/terraform.tfvars
+```
 
-# Set Baseline resources
-export TF_VAR_resource_group_name='rg-aksexample-dev-uksouth'
-export TF_VAR_location='uksouth'
+`terraform.tfvars` only holds the environment-specific values. Everything else (VM size, node counts, zones, network ranges and so on) has a default in `terraform/variables.tf`. This is the Terraform equivalent of a `.env` file next to a `docker-compose.yml`.
 
-# Set AKS resources
-export TF_VAR_virtual_network_name='vnet-aksexample-dev-uksouth'
-export TF_VAR_virtual_network_address_space='["192.168.18.0/23"]'
-export TF_VAR_aks_subnet_name='snet-aksexample-dev-uksouth'
-export TF_VAR_aks_subnet_address_prefixes='["192.168.18.0/23"]'
-export TF_VAR_aks_cluster_name='aks-aksexample-dev-uksouth'
-export TF_VAR_aks_dns_prefix='aksexample-uksouth'
-export TF_VAR_aks_kubernetes_version=1.30
-export TF_VAR_aks_node_resource_group_name='aksnrg-aksexample-dev-uksouth'
-export TF_VAR_aks_default_node_pool_name='linuxsysnp'
-export TF_VAR_aks_default_node_pool_vm_size='Standard_B2ms'
-export TF_VAR_aks_default_node_pool_os_sku='Ubuntu'
-export TF_VAR_aks_default_node_pool_os_disk_size_gb=30
-export TF_VAR_aks_default_node_pool_minimum_node_count=1
-export TF_VAR_aks_default_node_pool_maximum_node_count=2
-export TF_VAR_aks_default_node_pool_availability_zones='["1","2","3"]'
-export TF_VAR_acr_name='acraksexampledevuksouth'
-export TF_VAR_acr_sku='Basic'
+The Kubernetes version defaults to the current AKS default. To see what is available, or to pin a version by setting `aks_kubernetes_version`:
+
+```bash
+az aks get-versions --location uksouth --output table
+```
+
+No storage account key is needed: the Terraform backend authenticates with your `az login` identity (`use_azuread_auth` in `backend.tf`), using the Storage Blob Data Contributor role assigned above.
+
+### Check VM availability and quota
+
+The default node pool uses `Standard_B2s_v2` (Bsv2 family) across availability zones 1, 2 and 3. New VM families often have a quota of zero on a subscription, so check before deploying:
+
+```bash
+# Is the size available in your region and zones? Restrictions should be None
+az vm list-skus --location uksouth --size Standard_B2s_v2 --zone --output table
+
+# Do you have quota? You need 2 vCPUs per node, so 4 for the autoscaler maximum of 2 nodes
+az vm list-usage --location uksouth --query "[?contains(name.value,'standardBsv2Family')]" --output table
+```
+
+If the quota limit is 0, request an increase in the Azure Portal under Subscriptions > Usage + quotas, searching for "Bsv2". 
+
+Some subscriptions are not enabled for zones on newer VM families. If you see zone restrictions, either request zonal access from Microsoft or deploy without zones by adding this to `terraform.tfvars`:
+
+```hcl
+aks_default_node_pool_availability_zones = []
 ```
 
 ## Deployment
@@ -157,27 +180,31 @@ Apply the add/change plan:
 terraform -chdir=terraform  apply aks-example-dev.tfplan
 ```
 
-![Terraform apply](images/terrafomr-apply-example.png)
+![Terraform apply](images/terraform-apply-example.png)
 
 > Note: The deployment should take around 5 minutes to complete
 
 ## AKS Inspection
 
 ```bash
+# Read the names Terraform created
+aks_cluster_name=$(terraform -chdir=terraform output -raw aks_cluster_name)
+resource_group_name=$(terraform -chdir=terraform output -raw resource_group_name)
+
 # Get overview using Azure CLI
 az aks show \
-  --name $TF_VAR_aks_cluster_name \
-  --resource-group $TF_VAR_resource_group_name \
+  --name $aks_cluster_name \
+  --resource-group $resource_group_name \
   --output table
 
 # Get nodepools using Azure CLI
 az aks nodepool list \
-  --cluster-name $TF_VAR_aks_cluster_name \
-  --resource-group $TF_VAR_resource_group_name \
+  --cluster-name $aks_cluster_name \
+  --resource-group $resource_group_name \
   --output table
 
 # Get Cluster credentials and set to current context
-az aks get-credentials --name $TF_VAR_aks_cluster_name --resource-group $TF_VAR_resource_group_name
+az aks get-credentials --name $aks_cluster_name --resource-group $resource_group_name
 
 # List all k8s objects from Cluster Control plane
 kubectl get all --all-namespaces
@@ -195,21 +222,31 @@ docker build -t hello-world-app .
 docker run -p 5000:5000 hello-world-app
 ```
 
+Browse to <http://localhost:5000> for the app, and <http://localhost:5000/healthz> for the health endpoint that Kubernetes will probe.
+
+The container runs the app with [gunicorn](https://gunicorn.org), a production WSGI server, rather than Flask's built-in development server. To test it under the same restrictions that the Kubernetes manifest applies (non-root, read-only filesystem, no Linux capabilities):
+
+```bash
+# On Windows with Git Bash, prefix with MSYS_NO_PATHCONV=1 so "/tmp" is not rewritten to a Windows path
+docker run -p 5000:5000 --user 1000 --read-only --tmpfs /tmp --cap-drop ALL hello-world-app
+```
+
 Upload the Docker image to the ACR:
 
 ```bash
-# Isolate the ACR for token replacement
-export ACR_NAME=$TF_VAR_acr_name
+# Isolate the ACR and image tag for token replacement - bump the tag for each new build
+export ACR_NAME=$(terraform -chdir=terraform output -raw acr_name)
+export IMAGE_TAG=v2
 
 # Login into the ACR using Entra/AAD auth
 az acr login --name $ACR_NAME
 
 # Tag the Docker image and confirm
-docker tag hello-world-app $ACR_NAME.azurecr.io/hello-world-app:v1
+docker tag hello-world-app $ACR_NAME.azurecr.io/hello-world-app:$IMAGE_TAG
 docker image ls | grep hello
 
 # Push the image to the ACR
-docker push $ACR_NAME.azurecr.io/hello-world-app:v1
+docker push $ACR_NAME.azurecr.io/hello-world-app:$IMAGE_TAG
 
 # Confirm the image has been uploaded
 az acr repository list --name $ACR_NAME
@@ -220,23 +257,38 @@ az acr repository list --name $ACR_NAME
 Serve the Hello World app using AKS:
 
 ```bash
-# Substitute tokens to create the deployment file - the ACR name needs to reflect what was deployed
+# Substitute tokens to create the manifests - ACR_NAME and IMAGE_TAG need to reflect what was pushed
 envsubst < kube-manifests/01-deployment.template.yml > kube-manifests/01-deployment.yml
+envsubst < kube-manifests/02-service.template.yml > kube-manifests/02-service.yml
+envsubst < kube-manifests/03-pdb.template.yml > kube-manifests/03-pdb.yml
 
 # Publish the app using the yml files
 kubectl apply -f kube-manifests/01-deployment.yml
 kubectl apply -f kube-manifests/02-service.yml
+kubectl apply -f kube-manifests/03-pdb.yml
 
-# Confirm the pods, deployment and service
+# Confirm the pods, deployment, service and disruption budget
 kubectl get pods
 kubectl get deployment
 kubectl get service
+kubectl get pdb
 ```
+
+The deployment manifest applies several good-practice settings. Docker Compose equivalents are in brackets:
+
+| Setting | What it does |
+|---|---|
+| `replicas: 2` | Two pods, so one can be restarted or moved without downtime (`deploy.replicas`) |
+| `resources.requests` / `limits` | Requests are reserved on a node when the pod is scheduled; limits are the ceiling. Exceeding the memory limit kills the container (`deploy.resources`) |
+| `readinessProbe` | A pod that fails is taken out of the Service's rotation but not restarted. Kubernetes has no direct Compose equivalent, as `healthcheck` only marks a container unhealthy |
+| `livenessProbe` | A pod that fails is restarted (`healthcheck` combined with `restart: on-failure`) |
+| `securityContext` | Run as non-root, no privilege escalation, read-only root filesystem, all Linux capabilities dropped (`user:`, `read_only:`, `cap_drop:`, `security_opt: no-new-privileges`) |
+| `emptyDir` on `/tmp` | A writable scratch directory, because the root filesystem is read-only (`tmpfs:`) |
+| `PodDisruptionBudget` | Keeps at least one pod running during node upgrades and scale-down. Compose has no equivalent |
 
 Here's a view from the Azure Portal for comparison:
 
 ![AKS service and ingresses](images/aks-services-and-ingresses-example.png)
-
 
 Browse to the External-IP to see the Hello World app in all its (not) glory:
 
@@ -248,6 +300,7 @@ You don't technically need to delete the app from AKS but here are the commands:
 
 ```bash
 # Unpublish the app using the yml files
+kubectl delete -f kube-manifests/03-pdb.yml
 kubectl delete -f kube-manifests/02-service.yml
 kubectl delete -f kube-manifests/01-deployment.yml
 ```
