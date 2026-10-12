@@ -1,0 +1,10 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: hello-world
+spec:
+  # During voluntary disruptions (node upgrades, scale-down) keep at least one pod running
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: hello-world

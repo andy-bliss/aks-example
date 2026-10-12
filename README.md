@@ -222,21 +222,31 @@ docker build -t hello-world-app .
 docker run -p 5000:5000 hello-world-app
 ```
 
+Browse to <http://localhost:5000> for the app, and <http://localhost:5000/healthz> for the health endpoint that Kubernetes will probe.
+
+The container runs the app with [gunicorn](https://gunicorn.org), a production WSGI server, rather than Flask's built-in development server. To test it under the same restrictions that the Kubernetes manifest applies (non-root, read-only filesystem, no Linux capabilities):
+
+```bash
+# On Windows with Git Bash, prefix with MSYS_NO_PATHCONV=1 so "/tmp" is not rewritten to a Windows path
+docker run -p 5000:5000 --user 1000 --read-only --tmpfs /tmp --cap-drop ALL hello-world-app
+```
+
 Upload the Docker image to the ACR:
 
 ```bash
-# Isolate the ACR for token replacement
+# Isolate the ACR and image tag for token replacement - bump the tag for each new build
 export ACR_NAME=$(terraform -chdir=terraform output -raw acr_name)
+export IMAGE_TAG=v2
 
 # Login into the ACR using Entra/AAD auth
 az acr login --name $ACR_NAME
 
 # Tag the Docker image and confirm
-docker tag hello-world-app $ACR_NAME.azurecr.io/hello-world-app:v1
+docker tag hello-world-app $ACR_NAME.azurecr.io/hello-world-app:$IMAGE_TAG
 docker image ls | grep hello
 
 # Push the image to the ACR
-docker push $ACR_NAME.azurecr.io/hello-world-app:v1
+docker push $ACR_NAME.azurecr.io/hello-world-app:$IMAGE_TAG
 
 # Confirm the image has been uploaded
 az acr repository list --name $ACR_NAME
@@ -247,19 +257,34 @@ az acr repository list --name $ACR_NAME
 Serve the Hello World app using AKS:
 
 ```bash
-# Substitute tokens to create the deployment file - the ACR name needs to reflect what was deployed
+# Substitute tokens to create the manifests - ACR_NAME and IMAGE_TAG need to reflect what was pushed
 envsubst < kube-manifests/01-deployment.template.yml > kube-manifests/01-deployment.yml
 envsubst < kube-manifests/02-service.template.yml > kube-manifests/02-service.yml
+envsubst < kube-manifests/03-pdb.template.yml > kube-manifests/03-pdb.yml
 
 # Publish the app using the yml files
 kubectl apply -f kube-manifests/01-deployment.yml
 kubectl apply -f kube-manifests/02-service.yml
+kubectl apply -f kube-manifests/03-pdb.yml
 
-# Confirm the pods, deployment and service
+# Confirm the pods, deployment, service and disruption budget
 kubectl get pods
 kubectl get deployment
 kubectl get service
+kubectl get pdb
 ```
+
+The deployment manifest applies several good-practice settings. Docker Compose equivalents are in brackets:
+
+| Setting | What it does |
+|---|---|
+| `replicas: 2` | Two pods, so one can be restarted or moved without downtime (`deploy.replicas`) |
+| `resources.requests` / `limits` | Requests are reserved on a node when the pod is scheduled; limits are the ceiling. Exceeding the memory limit kills the container (`deploy.resources`) |
+| `readinessProbe` | A pod that fails is taken out of the Service's rotation but not restarted. Kubernetes has no direct Compose equivalent, as `healthcheck` only marks a container unhealthy |
+| `livenessProbe` | A pod that fails is restarted (`healthcheck` combined with `restart: on-failure`) |
+| `securityContext` | Run as non-root, no privilege escalation, read-only root filesystem, all Linux capabilities dropped (`user:`, `read_only:`, `cap_drop:`, `security_opt: no-new-privileges`) |
+| `emptyDir` on `/tmp` | A writable scratch directory, because the root filesystem is read-only (`tmpfs:`) |
+| `PodDisruptionBudget` | Keeps at least one pod running during node upgrades and scale-down. Compose has no equivalent |
 
 Here's a view from the Azure Portal for comparison:
 
@@ -275,6 +300,7 @@ You don't technically need to delete the app from AKS but here are the commands:
 
 ```bash
 # Unpublish the app using the yml files
+kubectl delete -f kube-manifests/03-pdb.yml
 kubectl delete -f kube-manifests/02-service.yml
 kubectl delete -f kube-manifests/01-deployment.yml
 ```
